@@ -166,6 +166,7 @@ st_scroll_view_get_property (GObject    *object,
       break;
     case PROP_AUTO_SCROLL:
       g_value_set_boolean (value, priv->auto_scroll);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
     }
@@ -364,6 +365,7 @@ st_scroll_view_set_property (GObject      *object,
     case PROP_AUTO_SCROLL:
       st_scroll_view_set_auto_scrolling (self,
                                          g_value_get_boolean (value));
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
     }
@@ -409,6 +411,8 @@ st_scroll_view_dispose (GObject *object)
     g_signal_handler_disconnect (priv->settings, priv->setting_connect_id);
     priv->setting_connect_id = 0;
   }
+
+  g_clear_object (&priv->settings);
 
   g_signal_handlers_disconnect_by_func (ST_SCROLL_VIEW (object), motion_event_cb, ST_SCROLL_VIEW (object));
 
@@ -512,6 +516,7 @@ st_scroll_view_get_preferred_width (ClutterActor *actor,
       break;
     case GTK_POLICY_ALWAYS:
     case GTK_POLICY_AUTOMATIC:
+    case GTK_POLICY_EXTERNAL:
       /* Should theoretically use the min width of the hscrollbar,
        * but that's not cleanly defined at the moment */
       min_width = 0;
@@ -568,6 +573,7 @@ st_scroll_view_get_preferred_height (ClutterActor *actor,
   switch (priv->vscrollbar_policy)
     {
     case GTK_POLICY_NEVER:
+    case GTK_POLICY_EXTERNAL:
       break;
     case GTK_POLICY_ALWAYS:
     case GTK_POLICY_AUTOMATIC:
@@ -582,6 +588,7 @@ st_scroll_view_get_preferred_height (ClutterActor *actor,
   switch (priv->hscrollbar_policy)
     {
     case GTK_POLICY_NEVER:
+    case GTK_POLICY_EXTERNAL:
       account_for_hscrollbar = FALSE;
       break;
     case GTK_POLICY_ALWAYS:
@@ -607,6 +614,7 @@ st_scroll_view_get_preferred_height (ClutterActor *actor,
       break;
     case GTK_POLICY_ALWAYS:
     case GTK_POLICY_AUTOMATIC:
+    case GTK_POLICY_EXTERNAL:
       /* Should theoretically use the min height of the vscrollbar,
        * but that's not cleanly defined at the moment */
       min_height = 0;

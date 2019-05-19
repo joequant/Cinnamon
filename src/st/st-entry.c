@@ -225,12 +225,6 @@ st_entry_dispose (GObject *object)
       priv->blink_timeout = 0;
     }
 
-  if (priv->entry)
-    {
-      clutter_actor_destroy (priv->entry);
-      priv->entry = NULL;
-    }
-
   keymap = gdk_keymap_get_for_display (gdk_display_get_default ());
   g_signal_handlers_disconnect_by_func (keymap, keymap_state_changed, entry);
 
@@ -242,7 +236,7 @@ st_entry_finalize (GObject *object)
 {
   StEntryPrivate *priv = ST_ENTRY_PRIV (object);
 
-  g_free (priv->hint);
+  free (priv->hint);
   priv->hint = NULL;
 
   G_OBJECT_CLASS (st_entry_parent_class)->finalize (object);
@@ -1080,7 +1074,7 @@ st_entry_set_hint_text (StEntry     *entry,
 
   priv = entry->priv;
 
-  g_free (priv->hint);
+  free (priv->hint);
 
   priv->hint = g_strdup (text);
 
@@ -1173,7 +1167,7 @@ _st_entry_set_icon_from_file (StEntry       *entry,
       g_object_unref (file);
 
       new_icon = (ClutterActor*) st_texture_cache_load_uri_async (cache, uri, -1, -1);
-      g_free (uri);
+      free (uri);
     }
 
   _st_entry_set_icon  (entry, icon, new_icon);

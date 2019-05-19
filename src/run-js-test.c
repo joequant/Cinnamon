@@ -127,25 +127,17 @@ main(int argc, char **argv)
   stage = clutter_stage_get_default ();
   title = g_filename_display_basename (filename);
   clutter_stage_set_title (CLUTTER_STAGE (stage), title);
-  g_free (title);
-
-#if HAVE_BLUETOOTH
-  /* The module imports are all so intertwined that if the test
-   * imports anything in js/ui, it will probably eventually end up
-   * pulling in ui/status/bluetooth.js. So we need this.
-   */
-  g_irepository_prepend_search_path (BLUETOOTH_DIR);
-#endif
+  free (title);
 
   /* evaluate the script */
   error = NULL;
   if (!gjs_context_eval (js_context, script, len,
                          filename, &code, &error)) {
-    g_free (script);
+    free (script);
     g_printerr ("%s\n", error->message);
     exit (1);
   }
 
-  g_free (script);
+  free (script);
   exit (code);
 }

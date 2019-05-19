@@ -10,7 +10,7 @@ import gi
 gi.require_version('Gtk', '3.0')
 gi.require_version('CDesktopEnums', '3.0')
 gi.require_version('CinnamonDesktop', '3.0')
-from gi.repository import Gio, Gtk, GObject, Gdk, GLib, GdkPixbuf, CDesktopEnums, CinnamonDesktop
+from gi.repository import Gio, Gtk, GObject, Gdk, GLib, GdkPixbuf, CDesktopEnums, CinnamonDesktop, XApp
 
 from ChooserButtonWidgets import *
 from KeybindingWidgets import ButtonKeybinding
@@ -203,16 +203,10 @@ class SAModule:
         self.category = category
 
     def process (self):
-        name = self.name.replace("gksudo ", "")
-        name = name.replace("gksu ", "")
+        name = self.name.replace("pkexec ", "")
         name = name.split()[0]
 
-        for path in os.environ["PATH"].split(os.pathsep):
-            path = path.strip('"')
-            exe_file = os.path.join(path, name)
-            if os.path.isfile(exe_file) and os.access(exe_file, os.X_OK):
-                return True
-        return False
+        return GLib.find_program_in_path(name) is not None
 
 def walk_directories(dirs, filter_func, return_directories=False):
     # If return_directories is False: returns a list of valid subdir names
@@ -231,56 +225,6 @@ def walk_directories(dirs, filter_func, return_directories=False):
         pass
         #logging.critical("Error parsing directories", exc_info=True)
     return valid
-
-class Section(Gtk.Box):
-    def __init__(self, name):
-        self.name = name
-        super(Section, self).__init__()
-        self.set_orientation(Gtk.Orientation.VERTICAL)
-        self.set_border_width(6)
-        self.set_spacing(6)
-        self.label = Gtk.Label()
-        self.label.set_markup("<b>%s</b>" % self.name)
-        hbox = Gtk.Box()
-        hbox.set_orientation(Gtk.Orientation.HORIZONTAL)
-        hbox.pack_start(self.label, False, False, 0)
-        self.pack_start(hbox, False, True, 0)
-
-    def add(self, widget):
-        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        box.set_margin_left(40)
-        box.set_margin_right(40)
-        box.pack_start(widget, False, True, 0)
-        self.pack_start(box, False, False, 0)
-
-    def add_expand(self, widget):
-        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        box.set_margin_left(40)
-        box.set_margin_right(40)
-        box.pack_start(widget, True, True, 0)
-        self.pack_start(box, False, False, 0)
-
-    def add_indented(self, widget):
-        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        box.set_margin_left(80)
-        box.set_margin_right(10)
-        box.pack_start(widget, False, True, 0)
-        self.pack_start(box, False, False, 0)
-
-    def add_indented_expand(self, widget):
-        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        box.set_margin_left(80)
-        box.set_margin_right(10)
-        box.pack_start(widget, True, True, 0)
-        self.pack_start(box, False, False, 0)
-
-class SectionBg(Gtk.Viewport):
-    def __init__(self):
-        Gtk.Viewport.__init__(self)
-        self.set_shadow_type(Gtk.ShadowType.ETCHED_IN)
-        style = self.get_style_context()
-        style.add_class("section-bg")
-        self.expand = True # Tells CS to give expand us to the whole window
 
 class SettingsStack(Gtk.Stack):
     def __init__(self):
@@ -338,9 +282,10 @@ class SettingsPage(Gtk.Box):
 
         return section
 
-    def add_reveal_section(self, title, schema=None, key=None, values=None):
+    def add_reveal_section(self, title, schema=None, key=None, values=None, revealer=None):
         section = SettingsBox(title)
-        revealer = SettingsRevealer(schema, key, values)
+        if revealer is None:
+            revealer = SettingsRevealer(schema, key, values)
         revealer.add(section)
         section._revealer = revealer
         self.pack_start(revealer, False, False, 0)
@@ -378,7 +323,7 @@ class SettingsBox(Gtk.Frame):
             vbox.add(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
         list_box = Gtk.ListBox()
         list_box.set_selection_mode(Gtk.SelectionMode.NONE)
-        row = Gtk.ListBoxRow()
+        row = Gtk.ListBoxRow(can_focus=False)
         row.add(widget)
         if isinstance(widget, Switch):
             list_box.connect("row-activated", widget.clicked)
@@ -388,19 +333,20 @@ class SettingsBox(Gtk.Frame):
 
         self.need_separator = True
 
-    def add_reveal_row(self, widget, schema=None, key=None, values=None, check_func=None):
+    def add_reveal_row(self, widget, schema=None, key=None, values=None, check_func=None, revealer=None):
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         if self.need_separator:
             vbox.add(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
         list_box = Gtk.ListBox()
         list_box.set_selection_mode(Gtk.SelectionMode.NONE)
-        row = Gtk.ListBoxRow()
+        row = Gtk.ListBoxRow(can_focus=False)
         row.add(widget)
         if isinstance(widget, Switch):
             list_box.connect("row-activated", widget.clicked)
         list_box.add(row)
         vbox.add(list_box)
-        revealer = SettingsRevealer(schema, key, values, check_func)
+        if revealer is None:
+            revealer = SettingsRevealer(schema, key, values, check_func)
         widget.revealer = revealer
         revealer.add(vbox)
         self.box.add(revealer)
@@ -458,18 +404,6 @@ class SettingsLabel(Gtk.Label):
 
     def set_label_text(self, text):
         self.set_label(text)
-
-class IndentedHBox(Gtk.HBox):
-    def __init__(self):
-        super(IndentedHBox, self).__init__()
-        indent = Gtk.Label.new('\t')
-        self.pack_start(indent, False, False, 0)
-
-    def add(self, item):
-        self.pack_start(item, False, True, 0)
-
-    def add_expand(self, item):
-        self.pack_start(item, True, True, 0)
 
 class Switch(SettingsWidget):
     bind_prop = "active"
@@ -612,7 +546,7 @@ class Range(SettingsWidget):
     bind_prop = "value"
     bind_dir = Gio.SettingsBindFlags.GET | Gio.SettingsBindFlags.NO_SENSITIVITY
 
-    def __init__(self, label, min_label="", max_label="", mini=None, maxi=None, step=None, invert=False, log=False, show_value=True, dep_key=None, tooltip="", flipped=False):
+    def __init__(self, label, min_label="", max_label="", mini=None, maxi=None, step=None, invert=False, log=False, show_value=True, dep_key=None, tooltip="", flipped=False, units=""):
         super(Range, self).__init__(dep_key=dep_key)
 
         self.set_orientation(Gtk.Orientation.VERTICAL)
@@ -625,6 +559,9 @@ class Range(SettingsWidget):
         self.value = 0
 
         hbox = Gtk.Box()
+
+        if units:
+            label += " ({})".format(units)
 
         self.label = Gtk.Label.new(label)
         self.label.set_halign(Gtk.Align.CENTER)
@@ -721,6 +658,7 @@ class Range(SettingsWidget):
     def set_rounding(self, digits):
         if not self.log:
             self.content_widget.set_round_digits(digits)
+            self.content_widget.set_digits(digits)
 
 class ComboBox(SettingsWidget):
     bind_dir = None
@@ -850,8 +788,10 @@ class FileChooser(SettingsWidget):
 class SoundFileChooser(SettingsWidget):
     bind_dir = None
 
-    def __init__(self, label, size_group=None, dep_key=None, tooltip=""):
+    def __init__(self, label, event_sounds=True, size_group=None, dep_key=None, tooltip=""):
         super(SoundFileChooser, self).__init__(dep_key=dep_key)
+
+        self.event_sounds = event_sounds
 
         self.label = SettingsLabel(label)
         self.content_widget = Gtk.Box()
@@ -910,11 +850,17 @@ class SoundFileChooser(SettingsWidget):
                                        buttons=(_("_Cancel"), Gtk.ResponseType.CANCEL,
                                                 _("_Open"), Gtk.ResponseType.ACCEPT))
 
-        dialog.set_filename(self.get_value())
+        if os.path.exists(self.get_value()):
+            dialog.set_filename(self.get_value())
+        else:
+            dialog.set_current_folder('/usr/share/sounds')
 
         sound_filter = Gtk.FileFilter()
-        sound_filter.add_mime_type("audio/x-wav")
-        sound_filter.add_mime_type("audio/x-vorbis+ogg")
+        if self.event_sounds:
+            sound_filter.add_mime_type("audio/x-wav")
+            sound_filter.add_mime_type("audio/x-vorbis+ogg")
+        else:
+            sound_filter.add_mime_type("audio/*")
         sound_filter.set_name(_("Sound files"))
         dialog.add_filter(sound_filter)
 
@@ -937,83 +883,24 @@ class SoundFileChooser(SettingsWidget):
         pass
 
 class IconChooser(SettingsWidget):
-    bind_prop = "text"
+    bind_prop = "icon"
     bind_dir = Gio.SettingsBindFlags.DEFAULT
 
     def __init__(self, label, expand_width=False, size_group=None, dep_key=None, tooltip=""):
         super(IconChooser, self).__init__(dep_key=dep_key)
 
-        valid, self.width, self.height = Gtk.icon_size_lookup(Gtk.IconSize.BUTTON)
-
         self.label = SettingsLabel(label)
 
-        self.content_widget = Gtk.Box()
-        self.bind_object = Gtk.Entry()
-        self.image_button = Gtk.Button()
-
-        self.preview = Gtk.Image.new()
-        self.image_button.set_image(self.preview)
-
-        self.content_widget.pack_start(self.bind_object, expand_width, expand_width, 2)
-        self.content_widget.pack_start(self.image_button, False, False, 5)
+        self.content_widget = XApp.IconChooserButton()
+        self.content_widget.set_icon_size(Gtk.IconSize.BUTTON)
 
         self.pack_start(self.label, False, False, 0)
         self.pack_end(self.content_widget, expand_width, expand_width, 0)
-
-        self.image_button.connect("clicked", self.on_button_pressed)
-        self.handler = self.bind_object.connect("changed", self.set_icon)
 
         self.set_tooltip_text(tooltip)
 
         if size_group:
             self.add_to_size_group(size_group)
-
-    def set_icon(self, *args):
-        val = self.bind_object.get_text()
-        if os.path.exists(val) and not os.path.isdir(val):
-            img = GdkPixbuf.Pixbuf.new_from_file_at_size(val, self.width, self.height)
-            self.preview.set_from_pixbuf(img)
-        else:
-            self.preview.set_from_icon_name(val, Gtk.IconSize.BUTTON)
-
-    def on_button_pressed(self, widget):
-        dialog = Gtk.FileChooserDialog(title=_("Choose an Icon"),
-                                       action=Gtk.FileChooserAction.OPEN,
-                                       transient_for=self.get_toplevel(),
-                                       buttons=(_("_Cancel"), Gtk.ResponseType.CANCEL,
-                                                _("_Open"), Gtk.ResponseType.OK))
-
-        filter_text = Gtk.FileFilter()
-        filter_text.set_name(_("Image files"))
-        filter_text.add_mime_type("image/*")
-        dialog.add_filter(filter_text)
-
-        preview = Gtk.Image()
-        dialog.set_preview_widget(preview)
-        dialog.connect("update-preview", self.update_icon_preview_cb, preview)
-
-        response = dialog.run()
-
-        if response == Gtk.ResponseType.OK:
-            filename = dialog.get_filename()
-            self.bind_object.set_text(filename)
-            self.set_value(filename)
-
-        dialog.destroy()
-
-    def update_icon_preview_cb(self, dialog, preview):
-        filename = dialog.get_preview_filename()
-        dialog.set_preview_widget_active(False)
-        if filename is not None:
-            if os.path.isfile(filename):
-                pixbuf = GdkPixbuf.Pixbuf.new_from_file(filename)
-                if pixbuf is not None:
-                    if pixbuf.get_width() > 128:
-                        pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_size(filename, 128, -1)
-                    elif pixbuf.get_height() > 128:
-                        pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_size(filename, -1, 128)
-                    preview.set_from_pixbuf(pixbuf)
-                    dialog.set_preview_widget_active(True)
 
 class TweenChooser(SettingsWidget):
     bind_prop = "tween"

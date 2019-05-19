@@ -9,6 +9,7 @@ import shutil
 import re
 import subprocess
 from random import randint
+from setproctitle import setproctitle
 
 import PIL
 from PIL import Image
@@ -18,6 +19,35 @@ gi.require_version("AccountsService", "1.0")
 from gi.repository import Gtk, GObject, Gio, GdkPixbuf, AccountsService, GLib
 
 gettext.install("cinnamon", "/usr/share/locale")
+
+class PrivHelper(object):
+    """A helper for performing temporary privilege drops. Necessary for
+    security when accessing user controlled files as root."""
+
+    def __init__(self):
+
+        self.orig_uid = os.getuid()
+        self.orig_gid = os.getgid()
+        self.orig_groups = os.getgroups()
+
+    def drop_privs(self, user):
+
+        uid = user.get_uid()
+        # the user's main group id
+        gid = pwd.getpwuid(uid).pw_gid
+
+        # initialize the user's supplemental groups and main group
+        os.initgroups(user.get_user_name(), gid)
+        os.setegid(gid)
+        os.seteuid(uid)
+
+    def restore_privs(self):
+
+        os.seteuid(self.orig_uid)
+        os.setegid(self.orig_gid)
+        os.setgroups(self.orig_groups)
+
+priv_helper = PrivHelper()
 
 (INDEX_USER_OBJECT, INDEX_USER_PICTURE, INDEX_USER_DESCRIPTION) = range(3)
 (INDEX_GID, INDEX_GROUPNAME) = range(2)
@@ -46,7 +76,7 @@ class GroupDialog (Gtk.Dialog):
             box.add(table)
             self.show_all()
 
-            self.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_OK, Gtk.ResponseType.OK, )
+            self.add_buttons(_("Cancel"), Gtk.ResponseType.CANCEL, _("OK"), Gtk.ResponseType.OK, )
             self.set_response_sensitive(Gtk.ResponseType.OK, False)
 
         except Exception as detail:
@@ -55,11 +85,11 @@ class GroupDialog (Gtk.Dialog):
     def _on_entry_changed(self, entry):
         name = entry.get_text()
         if " " in name or name.lower() != name:
-            entry.set_icon_from_stock(Gtk.EntryIconPosition.SECONDARY, Gtk.STOCK_DIALOG_WARNING)
+            entry.set_icon_from_icon_name(Gtk.EntryIconPosition.SECONDARY, "dialog-warning-symbolic")
             entry.set_icon_tooltip_text(Gtk.EntryIconPosition.SECONDARY, _("The group name cannot contain upper-case or space characters"))
             self.set_response_sensitive(Gtk.ResponseType.OK, False)
         else:
-            entry.set_icon_from_stock(Gtk.EntryIconPosition.SECONDARY, None)
+            entry.set_icon_from_icon_name(Gtk.EntryIconPosition.SECONDARY, None)
             self.set_response_sensitive(Gtk.ResponseType.OK, True)
 
         if entry.get_text() == "":
@@ -169,7 +199,7 @@ class PasswordDialog(Gtk.Dialog):
         table.add_labels([_("New password"), None, _("Confirm password")])
 
         self.new_password = Gtk.Entry()
-        self.new_password.set_icon_from_icon_name(Gtk.EntryIconPosition.SECONDARY, "view-refresh")
+        self.new_password.set_icon_from_icon_name(Gtk.EntryIconPosition.SECONDARY, "view-refresh-symbolic")
         self.new_password.set_icon_tooltip_text(Gtk.EntryIconPosition.SECONDARY, _("Generate a password"))
         self.new_password.connect("icon-release", self._on_new_password_icon_released)
         self.new_password.connect("changed", self._on_passwords_changed)
@@ -207,7 +237,7 @@ class PasswordDialog(Gtk.Dialog):
         content.add(label)
         table.attach(self.infobar, 0, 3, 4, 5)
 
-        self.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, _("Change"), Gtk.ResponseType.OK, )
+        self.add_buttons(_("Cancel"), Gtk.ResponseType.CANCEL, _("Change"), Gtk.ResponseType.OK, )
 
         self.set_passwords_visibility()
         self.set_response_sensitive(Gtk.ResponseType.OK, False)
@@ -291,10 +321,10 @@ class PasswordDialog(Gtk.Dialog):
         confirm_password = self.confirm_password.get_text()
         strength = self.password_strength(new_password)
         if new_password != confirm_password:
-            self.confirm_password.set_icon_from_stock(Gtk.EntryIconPosition.SECONDARY, Gtk.STOCK_DIALOG_WARNING)
+            self.confirm_password.set_icon_from_icon_name(Gtk.EntryIconPosition.SECONDARY, "dialog-warning-symbolic")
             self.confirm_password.set_icon_tooltip_text(Gtk.EntryIconPosition.SECONDARY, _("Passwords do not match"))
         else:
-            self.confirm_password.set_icon_from_stock(Gtk.EntryIconPosition.SECONDARY, None)
+            self.confirm_password.set_icon_from_icon_name(Gtk.EntryIconPosition.SECONDARY, None)
         if len(new_password) < 8:
             self.strengh_label.set_text(_("Too short"))
             self.strengh_indicator.set_fraction(0.0)
@@ -357,7 +387,7 @@ class NewUserDialog(Gtk.Dialog):
             box.add(label)
             self.show_all()
 
-            self.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_ADD, Gtk.ResponseType.OK, )
+            self.add_buttons(_("Cancel"), Gtk.ResponseType.CANCEL, _("Add"), Gtk.ResponseType.OK, )
             self.set_response_sensitive(Gtk.ResponseType.OK, False)
 
         except Exception as detail:
@@ -368,11 +398,11 @@ class NewUserDialog(Gtk.Dialog):
         username = self.username_entry.get_text()
         valid = True
         if re.search('[^a-z0-9_.-]', username):
-            self.username_entry.set_icon_from_stock(Gtk.EntryIconPosition.SECONDARY, Gtk.STOCK_DIALOG_WARNING)
+            self.username_entry.set_icon_from_icon_name(Gtk.EntryIconPosition.SECONDARY, "dialog-warning-symbolic")
             self.username_entry.set_icon_tooltip_text(Gtk.EntryIconPosition.SECONDARY, _("Invalid username"))
             valid = False
         else:
-            self.username_entry.set_icon_from_stock(Gtk.EntryIconPosition.SECONDARY, None)
+            self.username_entry.set_icon_from_icon_name(Gtk.EntryIconPosition.SECONDARY, None)
         if username == "" or fullname == "":
             valid = False
 
@@ -410,7 +440,7 @@ class GroupsDialog(Gtk.Dialog):
             box.pack_start(scrolled, True, True, 0)
             self.show_all()
 
-            self.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_OK, Gtk.ResponseType.OK, )
+            self.add_buttons(_("Cancel"), Gtk.ResponseType.CANCEL, _("OK"), Gtk.ResponseType.OK, )
 
         except Exception as detail:
             print(detail)
@@ -614,7 +644,7 @@ class Module:
         model, treeiter = self.users_treeview.get_selection().get_selected()
         if treeiter != None:
             user = model[treeiter][INDEX_USER_OBJECT]
-            dialog = Gtk.FileChooserDialog(None, None, Gtk.FileChooserAction.OPEN, (Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_OPEN, Gtk.ResponseType.OK))
+            dialog = Gtk.FileChooserDialog(None, None, Gtk.FileChooserAction.OPEN, (_("Cancel"), Gtk.ResponseType.CANCEL, _("Open"), Gtk.ResponseType.OK))
             filter = Gtk.FileFilter()
             filter.set_name(_("Images"))
             filter.add_mime_type("image/*")
@@ -642,7 +672,11 @@ class Module:
                 image = PIL.Image.open(path)
                 image.thumbnail((96, 96), Image.ANTIALIAS)
                 face_path = os.path.join(user.get_home_dir(), ".face")
-                image.save(face_path, "png")
+                try:
+                    priv_helper.drop_privs(user)
+                    image.save(face_path, "png")
+                finally:
+                    priv_helper.restore_privs()
                 user.set_icon_file(face_path)
                 self.face_image.set_from_file(face_path)
                 model.set_value(treeiter, INDEX_USER_PICTURE, GdkPixbuf.Pixbuf.new_from_file_at_size(face_path, 48, 48))
@@ -675,7 +709,11 @@ class Module:
                 user = model[treeiter][INDEX_USER_OBJECT]
                 user.set_icon_file(path)
                 self.face_image.set_from_file(path)
-                shutil.copy(path, os.path.join(user.get_home_dir(), ".face"))
+                try:
+                    priv_helper.drop_privs(user)
+                    shutil.copy(path, os.path.join(user.get_home_dir(), ".face"))
+                finally:
+                    priv_helper.restore_privs()
                 model.set_value(treeiter, INDEX_USER_PICTURE, GdkPixbuf.Pixbuf.new_from_file_at_size(path, 48, 48))
                 model.row_changed(model.get_path(treeiter), treeiter)
 
@@ -913,5 +951,6 @@ class Module:
 
 
 if __name__ == "__main__":
+    setproctitle("cinnamon-settings-users")
     module = Module()
     Gtk.main()

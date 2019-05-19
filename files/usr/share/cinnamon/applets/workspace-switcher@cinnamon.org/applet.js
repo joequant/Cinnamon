@@ -3,21 +3,19 @@ const Clutter = imports.gi.Clutter;
 const Lang = imports.lang;
 const Applet = imports.ui.applet;
 const Main = imports.ui.main;
+const Mainloop = imports.mainloop;
 const Meta = imports.gi.Meta;
 const PopupMenu = imports.ui.popupMenu;
 const SignalManager = imports.misc.signalManager;
 const Tooltips = imports.ui.tooltips;
 const Settings = imports.ui.settings;
 const ModalDialog = imports.ui.modalDialog;
+const Pango = imports.gi.Pango;
 
 const MIN_SWITCH_INTERVAL_MS = 220;
 
-function WorkspaceButton(index, applet) {
-    this._init(index, applet);
-}
-
-WorkspaceButton.prototype = {
-    _init : function(index, applet) {
+class WorkspaceButton {
+    constructor(index, applet) {
         this.index = index;
         this.applet = applet;
         this.workspace = global.screen.get_workspace_by_index(this.index);
@@ -28,260 +26,268 @@ WorkspaceButton.prototype = {
 
         this.ws_signals.connect(this.workspace, "window-added", this.update, this);
         this.ws_signals.connect(this.workspace, "window-removed", this.update, this);
-    },
+    }
 
-    show : function() {
+    show() {
         this.actor.connect('button-release-event', Lang.bind(this, this.onClicked));
         this._tooltip = new Tooltips.PanelItemTooltip(this, this.workspace_name, this.applet.orientation);
-    },
+        if (this.index === global.screen.get_active_workspace_index()) {
+            this.activate(true);
+        }
+    }
 
-    onClicked: function(actor, event) {
+    onClicked(actor, event) {
         if (event.get_button() == 1) {
             Main.wm.moveToWorkspace(this.workspace);
         }
-    },
+    }
 
-    update: function() {
+    update() {
         // defined in subclass
-    },
+    }
 
-    destroy: function() {
+    activate(active) {
+        // Defined in subclass
+    }
+
+    destroy() {
         this.ws_signals.disconnectAllSignals();
         this._tooltip.destroy();
         this.actor.destroy();
     }
-};
-
-function WorkspaceGraph(index, applet) {
-    this._init(index, applet);
 }
 
-WorkspaceGraph.prototype = {
-    __proto__: WorkspaceButton.prototype,
+class WorkspaceGraph extends WorkspaceButton {
+    constructor(index, applet) {
+        super(index, applet);
 
-    _init: function(index, applet) {
-        WorkspaceButton.prototype._init.call(this, index, applet);
+        this.scaleFactor = 0;
 
-        this.actor = new St.Bin({ reactive: true,
+        this.actor = new St.Bin({ reactive: applet._draggable.inhibit,
                                   style_class: 'workspace',
                                   y_fill: true,
                                   important: true });
 
         this.graphArea = new St.DrawingArea({ style_class: 'windows', important: true });
-        this.actor.child = this.graphArea;
+        this.actor.add_actor(this.graphArea);
         this.panelApplet = applet;
+
+        this.graphArea.set_size(1, 1);
+        this.graphArea.connect('repaint', Lang.bind(this, this.onRepaint));
+    }
+
+    getSizeAdjustment (actor, vertical) {
+        let themeNode = actor.get_theme_node()
+        if (vertical) {
+            return themeNode.get_horizontal_padding() +
+                themeNode.get_border_width(St.Side.LEFT) +
+                themeNode.get_border_width(St.Side.RIGHT);
+        }
+        else {
+            return themeNode.get_vertical_padding() +
+                themeNode.get_border_width(St.Side.TOP) +
+                themeNode.get_border_width(St.Side.BOTTOM);
+        }
+    }
+
+    setGraphSize () {
         this.workspace_size = new Meta.Rectangle();
         this.workspace.get_work_area_all_monitors(this.workspace_size);
-        this.sizeRatio = this.workspace_size.width / this.workspace_size.height;
-        let height = applet._panelHeight - 6;
 
-        if (applet.orientation == St.Side.LEFT || applet.orientation == St.Side.RIGHT)
-            height = height / this.sizeRatio;
+        let height, width;
+        if (this.panelApplet.orientation == St.Side.LEFT ||
+            this.panelApplet.orientation == St.Side.RIGHT) {
 
-        this.actor.set_size(this.sizeRatio * height, height);
-        this.graphArea.set_size(this.sizeRatio * height, height);
-        this.graphArea.connect('repaint', Lang.bind(this, this.onRepaint));
-        if (index == global.screen.get_active_workspace_index()) {
-            this.actor.add_style_pseudo_class('active');
+            width = this.panelApplet._panelHeight -
+                this.getSizeAdjustment(this.panelApplet.actor, true) -
+                this.getSizeAdjustment(this.actor, true);
+            this.scaleFactor = this.workspace_size.width / width;
+            height = Math.round(this.workspace_size.height / this.scaleFactor);
         }
-    },
+        else {
+            height = this.panelApplet._panelHeight -
+                this.getSizeAdjustment(this.panelApplet.actor, false) -
+                this.getSizeAdjustment(this.actor, false);
+            this.scaleFactor = this.workspace_size.height / height;
+            width = Math.round(this.workspace_size.width / this.scaleFactor);
+        }
 
-    scale: function (windows_rect, workspace_rect, area_width, area_height) {
+        this.graphArea.set_size(width, height);
+    }
+
+    scale (windows_rect, workspace_rect) {
         let scaled_rect = new Meta.Rectangle();
-        let x_ratio = area_width / workspace_rect.width;
-        let y_ratio = area_height / workspace_rect.height;
-        scaled_rect.x = windows_rect.x * x_ratio;
-        scaled_rect.y = windows_rect.y * y_ratio;
-        scaled_rect.width = windows_rect.width * x_ratio;
-        scaled_rect.height = windows_rect.height * y_ratio;
+        scaled_rect.x = Math.round((windows_rect.x - workspace_rect.x) / this.scaleFactor);
+        scaled_rect.y = Math.round((windows_rect.y - workspace_rect.y) / this.scaleFactor);
+        scaled_rect.width = Math.round(windows_rect.width / this.scaleFactor);
+        scaled_rect.height = Math.round(windows_rect.height / this.scaleFactor);
         return scaled_rect;
-    },
+    }
 
-    sortWindowsByUserTime: function (win1, win2) {
+    sortWindowsByUserTime (win1, win2) {
         let t1 = win1.get_user_time();
         let t2 = win2.get_user_time();
         return (t2 < t1) ? 1 : -1;
-    },
+    }
 
-    onRepaint: function(area) {
-        try {
-            let graphThemeNode = this.graphArea.get_theme_node();
-            let workspaceThemeNode = this.panelApplet.actor.get_theme_node();
-            let height = this.panelApplet._panelHeight - workspaceThemeNode.get_vertical_padding();
-            let borderWidth = workspaceThemeNode.get_border_width(St.Side.TOP) + workspaceThemeNode.get_border_width(St.Side.BOTTOM);
+    paintWindow(metaWindow, themeNode, cr) {
+        let windowBackgroundColor;
+        let windowBorderColor;
 
-            this.graphArea.set_size(this.sizeRatio * height, height - borderWidth);
-            let cr = area.get_context();
-            let [area_width, area_height] = area.get_surface_size();
+        let scaled_rect = this.scale(metaWindow.get_outer_rect(), this.workspace_size);
 
-            // construct a list with all windows
-            let windows = this.workspace.list_windows();
-            windows = windows.filter( Main.isInteresting );
-            windows = windows.filter(
-                function(w) {
-                    return !w.is_skip_taskbar() && !w.minimized;
-                });
-            windows.sort(this.sortWindowsByUserTime);
+        if (metaWindow.has_focus()) {
+            windowBorderColor = themeNode.get_color('-active-window-border');
+            windowBackgroundColor = themeNode.get_color('-active-window-background');
+        } else {
+            windowBorderColor = themeNode.get_color('-inactive-window-border');
+            windowBackgroundColor = themeNode.get_color('-inactive-window-background');
+        }
 
-            if (windows.length) {
-                let windowBackgroundColor;
-                let windowBorderColor;
-                for (let i = 0; i < windows.length; ++i) {
-                    let metaWindow = windows[i];
-                    let scaled_rect = this.scale(metaWindow.get_outer_rect(), this.workspace_size, area_width, area_height);
+        Clutter.cairo_set_source_color(cr, windowBorderColor);
+        cr.rectangle(scaled_rect.x, scaled_rect.y, scaled_rect.width, scaled_rect.height);
+        cr.strokePreserve();
 
-                    cr.setLineWidth(1);
-                    if (metaWindow.has_focus()) {
-                        windowBorderColor = graphThemeNode.get_color('-active-window-border');
-                        Clutter.cairo_set_source_color(cr, windowBorderColor);
-                    }
-                    else {
-                        windowBorderColor = graphThemeNode.get_color('-inactive-window-border');
-                        Clutter.cairo_set_source_color(cr, windowBorderColor);
-                    }
-                    cr.rectangle(scaled_rect.x, scaled_rect.y, scaled_rect.width, scaled_rect.height);
-                    cr.strokePreserve();
-                    if (metaWindow.has_focus()) {
-                        windowBackgroundColor = graphThemeNode.get_color('-active-window-background');
-                        Clutter.cairo_set_source_color(cr, windowBackgroundColor);
-                    }
-                    else {
-                        windowBackgroundColor = graphThemeNode.get_color('-inactive-window-background');
-                        Clutter.cairo_set_source_color(cr, windowBackgroundColor);
-                    }
+        Clutter.cairo_set_source_color(cr, windowBackgroundColor);
+        cr.fill();
+    }
 
-                    cr.fill();
+    onRepaint(area) {
+        // we need to set the size of the drawing area the first time, but we can't get
+        // accurate measurements until everything is added to the stage
+        if (this.scaleFactor === 0) this.setGraphSize();
+
+        let graphThemeNode = this.graphArea.get_theme_node();
+        let cr = area.get_context();
+        cr.setLineWidth(1);
+
+        // construct a list with all windows
+        let windows = this.workspace.list_windows();
+        windows = windows.filter( Main.isInteresting );
+        windows = windows.filter(
+            function(w) {
+                return !w.is_skip_taskbar() && !w.minimized;
+            });
+
+        windows.sort(this.sortWindowsByUserTime);
+
+        if (windows.length) {
+            let focusWindow = null;
+
+            for (let i = 0; i < windows.length; ++i) {
+                let metaWindow = windows[i];
+
+                if (metaWindow.has_focus()) {
+                    focusWindow = metaWindow;
+                    continue;
                 }
+
+                this.paintWindow(metaWindow, graphThemeNode, cr);
             }
 
-            cr.$dispose();
-        } catch(e) {
-            global.logError(e);
+            if (focusWindow) {
+                this.paintWindow(focusWindow, graphThemeNode, cr);
+            }
         }
-    },
 
-    update: function() {
+        cr.$dispose();
+    }
+
+    update() {
         this.graphArea.queue_repaint();
     }
-};
 
-function SimpleButton(index, applet) {
-    this._init(index, applet);
+    activate(active) {
+        if (active)
+            this.actor.add_style_pseudo_class('active');
+        else
+            this.actor.remove_style_pseudo_class('active');
+    }
 }
 
-SimpleButton.prototype = {
-    __proto__: WorkspaceButton.prototype,
-    _init : function(index, applet) {
-        WorkspaceButton.prototype._init.call(this, index, applet);
+class SimpleButton extends WorkspaceButton {
+    constructor(index, applet) {
+        super(index, applet);
 
         this.actor = new St.Button({ name: 'workspaceButton',
                                      style_class: 'workspace-button',
-                                     reactive: true });
-
-        if (index == global.screen.get_active_workspace_index()) {
-            this.actor.add_style_pseudo_class('outlined');
-        }
+                                     reactive: applet._draggable.inhibit });
 
         if (applet.orientation == St.Side.TOP || applet.orientation == St.Side.BOTTOM) {
             this.actor.set_height(applet._panelHeight);
         } else {
-            this.actor.set_height(0.6 * applet._panelHeight);  // factors are completely empirical
-            this.actor.set_width(0.9 * applet._panelHeight);
+            this.actor.set_width(applet._panelHeight);
+            this.actor.add_style_class_name('vertical');
         }
 
-        if (applet.orientation == St.Side.LEFT || applet.orientation == St.Side.RIGHT)
-            this.actor.add_style_class_name('vertical');
-
         let label = new St.Label({ text: (index + 1).toString() });
+        label.clutter_text.set_ellipsize(Pango.EllipsizeMode.NONE);
         this.actor.set_child(label);
-    },
-
-    update: function() {
-
     }
-};
 
-function MyApplet(metadata, orientation, panel_height, instance_id) {
-    this._init(metadata, orientation, panel_height, instance_id);
+    activate(active) {
+        if (active)
+            this.actor.add_style_pseudo_class('outlined');
+        else
+            this.actor.remove_style_pseudo_class('outlined');
+    }
 }
 
-MyApplet.prototype = {
-    __proto__: Applet.Applet.prototype,
-
-    _init: function(metadata, orientation, panel_height, instance_id) {
-        Applet.Applet.prototype._init.call(this, orientation, panel_height, instance_id);
+class CinnamonWorkspaceSwitcher extends Applet.Applet {
+    constructor(metadata, orientation, panel_height, instance_id) {
+        super(orientation, panel_height, instance_id);
 
         this.setAllowedLayout(Applet.AllowedLayout.BOTH);
 
-        try {
-            this.orientation = orientation;
-            this.panel_height = panel_height;
-            this.signals = new SignalManager.SignalManager(null);
-            this.buttons = [];
-            this._last_switch = 0;
-            this._last_switch_direction = 0;
+        this.orientation = orientation;
+        this.signals = new SignalManager.SignalManager(null);
+        this.buttons = [];
+        this._last_switch = 0;
+        this._last_switch_direction = 0;
+        this.createButtonsQueued = false;
 
-            let manager;
-            if (this.orientation == St.Side.TOP || this.orientation == St.Side.BOTTOM) {
-                manager = new Clutter.BoxLayout({ spacing: 2 * global.ui_scale,
-                                                  homogeneous: true,
-                                                  orientation: Clutter.Orientation.HORIZONTAL });
-            } else {
-                manager = new Clutter.BoxLayout({ spacing: 2 * global.ui_scale,
-                                                  homogeneous: true,
-                                                  orientation: Clutter.Orientation.VERTICAL });
-            }
-            this.manager = manager;
-            this.manager_container = new Clutter.Actor({ layout_manager: manager });
-            this.actor.add_actor (this.manager_container);
-            this.manager_container.show();
+        this._focusWindow = 0;
+        if (global.display.focus_window)
+            this._focusWindow = global.display.focus_window.get_compositor_private();
 
-            this._focusWindow = 0;
-            if (global.display.focus_window)
-                this._focusWindow = global.display.focus_window.get_compositor_private();
+        this.settings = new Settings.AppletSettings(this, metadata.uuid, instance_id);
+        this.settings.bind("display_type", "display_type", this.queueCreateButtons);
 
-            this.settings = new Settings.AppletSettings(this, metadata.uuid, instance_id);
-            this.settings.bind("display_type", "display_type", this._createButtons);
+        this.actor.connect('scroll-event', this.hook.bind(this));
 
-            this.actor.connect('scroll-event', this.hook.bind(this));
+        this.queueCreateButtons();
+        global.screen.connect('notify::n-workspaces', Lang.bind(this, this.onNumberOfWorkspacesChanged));
+        global.screen.connect('workareas-changed', Lang.bind(this, this.queueCreateButtons));
+        global.window_manager.connect('switch-workspace', this._onWorkspaceChanged.bind(this));
+        global.settings.connect('changed::panel-edit-mode', Lang.bind(this, this.on_panel_edit_mode_changed));
 
-            this._createButtons();
-            global.screen.connect('notify::n-workspaces', Lang.bind(this, this.onNumberOfWorkspacesChanged));
-            global.window_manager.connect('switch-workspace', Lang.bind(this, this._createButtons));
-            this.on_panel_edit_mode_changed();
-            global.settings.connect('changed::panel-edit-mode', Lang.bind(this, this.on_panel_edit_mode_changed));
+        let expoMenuItem = new PopupMenu.PopupIconMenuItem(_("Manage workspaces (Expo)"), "view-grid-symbolic", St.IconType.SYMBOLIC);
+        expoMenuItem.connect('activate', Lang.bind(this, function() {
+            if (!Main.expo.animationInProgress)
+                Main.expo.toggle();
+        }));
+        this._applet_context_menu.addMenuItem(expoMenuItem);
 
-            let expoMenuItem = new PopupMenu.PopupIconMenuItem(_("Manage workspaces (Expo)"), "view-grid-symbolic", St.IconType.SYMBOLIC);
-            expoMenuItem.connect('activate', Lang.bind(this, function() {
-                if (!Main.expo.animationInProgress)
-                    Main.expo.toggle();
-            }));
-            this._applet_context_menu.addMenuItem(expoMenuItem);
+        let addWorkspaceMenuItem = new PopupMenu.PopupIconMenuItem (_("Add a new workspace"), "list-add", St.IconType.SYMBOLIC);
+        addWorkspaceMenuItem.connect('activate', Lang.bind(this, function() {
+            Main._addWorkspace();
+        }));
+        this._applet_context_menu.addMenuItem(addWorkspaceMenuItem);
 
-            let addWorkspaceMenuItem = new PopupMenu.PopupIconMenuItem (_("Add a new workspace"), "list-add", St.IconType.SYMBOLIC);
-            addWorkspaceMenuItem.connect('activate', Lang.bind(this, function() {
-                Main._addWorkspace();
-            }));
-            this._applet_context_menu.addMenuItem(addWorkspaceMenuItem);
-
-            this.removeWorkspaceMenuItem = new PopupMenu.PopupIconMenuItem (_("Remove the current workspace"), "list-remove", St.IconType.SYMBOLIC);
-            this.removeWorkspaceMenuItem.connect('activate', Lang.bind(this, function() {
-                this.removeWorkspace();
-            }));
-            this._applet_context_menu.addMenuItem(this.removeWorkspaceMenuItem);
-            this.removeWorkspaceMenuItem.setSensitive(global.screen.n_workspaces > 1);
-        }
-        catch (e) {
-            global.logError(e);
-        }
-    },
-
-    onNumberOfWorkspacesChanged: function() {
+        this.removeWorkspaceMenuItem = new PopupMenu.PopupIconMenuItem (_("Remove the current workspace"), "list-remove", St.IconType.SYMBOLIC);
+        this.removeWorkspaceMenuItem.connect('activate', Lang.bind(this, function() {
+            this.removeWorkspace();
+        }));
+        this._applet_context_menu.addMenuItem(this.removeWorkspaceMenuItem);
         this.removeWorkspaceMenuItem.setSensitive(global.screen.n_workspaces > 1);
-        this._createButtons();
-    },
+    }
 
-    removeWorkspace : function (){
+    onNumberOfWorkspacesChanged() {
+        this.removeWorkspaceMenuItem.setSensitive(global.screen.n_workspaces > 1);
+        this.queueCreateButtons();
+    }
+
+    removeWorkspace  (){
         if (global.screen.n_workspaces <= 1) {
             return;
         }
@@ -298,31 +304,36 @@ MyApplet.prototype = {
         else {
             removeAction();
         }
-    },
+    }
 
-    on_panel_edit_mode_changed: function() {
+    _onWorkspaceChanged(wm, from, to) {
+        this.buttons[from].activate(false);
+        this.buttons[to].activate(true);
+    }
+
+    on_panel_edit_mode_changed() {
         let reactive = !global.settings.get_boolean('panel-edit-mode');
         for (let i = 0; i < this.buttons.length; ++i) {
-            this.buttons[i].reactive = reactive;
+            this.buttons[i].actor.reactive = reactive;
         }
-    },
+    }
 
-    on_orientation_changed: function(neworientation) {
+    on_orientation_changed(neworientation) {
         this.orientation = neworientation;
 
         if (this.orientation == St.Side.TOP || this.orientation == St.Side.BOTTOM)
-            this.manager.set_vertical(false);
+            this.actor.set_vertical(false);
         else
-            this.manager.set_vertical(true);
+            this.actor.set_vertical(true);
 
-        this._createButtons();
-    },
+        this.queueCreateButtons();
+    }
 
-    on_panel_height_changed: function() {
-        this._createButtons();
-    },
+    on_panel_height_changed() {
+        this.queueCreateButtons();
+    }
 
-    hook: function(actor, event) {
+    hook(actor, event) {
         let now = (new Date()).getTime();
         let direction = event.get_scroll_direction();
 
@@ -340,23 +351,40 @@ MyApplet.prototype = {
             this._last_switch = now;
             this._last_switch_direction = direction;
         }
-    },
+    }
 
-    _createButtons: function() {
+    queueCreateButtons() {
+        if (!this.createButtonsQueued) {
+            Mainloop.idle_add(Lang.bind(this, this._createButtons));
+            this.createButtonsQueued = true;
+        }
+    }
+
+    _createButtons() {
+        this.createButtonsQueued = false;
         for (let i = 0; i < this.buttons.length; ++i) {
             this.buttons[i].destroy();
         }
 
-        let suppress_graph = false; // suppress the graph and replace by buttons if size ratio
-                                    // would be unworkable in a vertical panel
-        if (this.orientation == St.Side.LEFT || this.orientation == St.Side.RIGHT) {
-          let workspace_size = new Meta.Rectangle();
-          global.screen.get_workspace_by_index(0).get_work_area_all_monitors(workspace_size);
-          let sizeRatio = workspace_size.width / workspace_size.height;
-          if (sizeRatio >= 2.35) {  // completely empirical, other than the widest
-                                    // ratio single screen I know is 21*9 = 2.33
-              suppress_graph = true;
-          }
+        // we're just doing a rough estimate here, but less than about 20px in either
+        // direction makes visual layout useless.
+        let suppress_graph = false;
+        if (this._panelHeight < 26) suppress_graph = true;
+        else {
+            let workspace_size = new Meta.Rectangle();
+            global.screen.get_workspace_by_index(0).get_work_area_all_monitors(workspace_size);
+            if (this.orientation == St.Side.LEFT || this.orientation == St.Side.RIGHT) {
+                let estHeight = (this._panelHeight - 6) / workspace_size.width * workspace_size.height;
+                if (estHeight < 20) {
+                    suppress_graph = true;
+                }
+            }
+            else {
+                let estWidth = (this._panelHeight - 6) / workspace_size.height * workspace_size.width;
+                if (estWidth < 20) {
+                    suppress_graph = true;
+                }
+            }
         }
 
         if (this.display_type == "visual" && !suppress_graph)
@@ -373,19 +401,19 @@ MyApplet.prototype = {
             else
                 this.buttons[i] = new SimpleButton(i, this);
 
-            this.manager_container.add_actor(this.buttons[i].actor);
+            this.actor.add_actor(this.buttons[i].actor);
             this.buttons[i].show();
         }
 
-        this.signals.disconnectAllSignals();
+        this.signals.disconnect("notify::focus-window");
         if (this.display_type == "visual" && !suppress_graph) {
             // In visual mode, keep track of window events to represent them
             this.signals.connect(global.display, "notify::focus-window", this._onFocusChanged, this);
             this._onFocusChanged();
         }
-    },
+    }
 
-    _onFocusChanged: function() {
+    _onFocusChanged() {
         if (global.display.focus_window &&
             this._focusWindow == global.display.focus_window.get_compositor_private())
             return;
@@ -400,19 +428,18 @@ MyApplet.prototype = {
         this.signals.connect(this._focusWindow, "position-changed", Lang.bind(this, this._onPositionChanged), this);
         this.signals.connect(this._focusWindow, "size-changed", Lang.bind(this, this._onPositionChanged), this);
         this._onPositionChanged();
-    },
+    }
 
-    _onPositionChanged: function() {
+    _onPositionChanged() {
         let button = this.buttons[global.screen.get_active_workspace_index()];
         button.update();
-    },
+    }
 
-    on_applet_removed_from_panel: function() {
+    on_applet_removed_from_panel() {
         this.signals.disconnectAllSignals();
     }
-};
+}
 
 function main(metadata, orientation, panel_height, instance_id) {
-    let myApplet = new MyApplet(metadata, orientation, panel_height, instance_id);
-    return myApplet;
+    return new CinnamonWorkspaceSwitcher(metadata, orientation, panel_height, instance_id);
 }

@@ -1,9 +1,12 @@
 #!/usr/bin/python3
 
 try:
-    import PAM
+    import pam
+    print("Using pam module (python3-pampy)")
 except:
-    import pam as PAM
+    import PAM
+    print("Using PAM module (python3-pam)")
+    pam = None
 import pexpect
 import time
 from random import randint
@@ -18,6 +21,10 @@ from gi.repository import AccountsService, GLib
 
 from GSettingsWidgets import *
 
+class PasswordError(Exception):
+    '''Exception raised when an incorrect password is supplied.'''
+    pass
+
 
 class Module:
     name = "user"
@@ -25,7 +32,7 @@ class Module:
     comment = _("Change your user preferences and password")
 
     def __init__(self, content_box):
-        keywords = _("user, account, information, details")
+        keywords = _("user, account, information, details, password")
         sidePage = SidePage(_("Account details"), "cs-user", keywords, content_box, module=self)
         self.sidePage = sidePage
 
@@ -343,23 +350,38 @@ class PasswordDialog(Gtk.Dialog):
     def _on_show_password_toggled(self, widget):
         self.set_passwords_visibility()
 
+    def auth_pam(self):
+        if not pam.pam().authenticate(GLib.get_user_name(), self.current_password.get_text(), 'passwd'):
+            raise PasswordError("Invalid password")
+
+    def auth_PyPAM(self):
+        auth = PAM.pam()
+        auth.start('passwd')
+        auth.set_item(PAM.PAM_USER, GLib.get_user_name())
+        auth.set_item(PAM.PAM_CONV, self.pam_conv)
+        try:
+            auth.authenticate()
+            auth.acct_mgmt()
+            return True
+        except PAM.error as resp:
+            raise PasswordError("Invalid password")
+
     def _on_current_password_changed(self, widget, event):
         self.infobar.hide()
         if self.current_password.get_text() != "":
-            auth = PAM.pam()
-            auth.start('passwd')
-            auth.set_item(PAM.PAM_USER, GLib.get_user_name())
-            auth.set_item(PAM.PAM_CONV, self.pam_conv)
             try:
-                auth.authenticate()
-                auth.acct_mgmt()
-            except PAM.error as resp:
+                self.auth_pam() if pam else self.auth_PyPAM()
+            except PasswordError:
                 self.current_password.set_icon_from_stock(Gtk.EntryIconPosition.SECONDARY, Gtk.STOCK_DIALOG_WARNING)
                 self.current_password.set_icon_tooltip_text(Gtk.EntryIconPosition.SECONDARY, _("Wrong password"))
                 self.current_password.set_tooltip_text(_("Wrong password"))
                 self.correct_current_password = False
             except:
-                print('Internal error')
+                self.current_password.set_icon_from_stock(Gtk.EntryIconPosition.SECONDARY, Gtk.STOCK_DIALOG_WARNING)
+                self.current_password.set_icon_tooltip_text(Gtk.EntryIconPosition.SECONDARY, _("Internal Error"))
+                self.current_password.set_tooltip_text(_("Internal Error"))
+                self.correct_current_password = False
+                raise
             else:
                 self.current_password.set_icon_from_stock(Gtk.EntryIconPosition.SECONDARY, None)
                 self.current_password.set_tooltip_text("")

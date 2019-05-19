@@ -9,6 +9,7 @@ const TweenList = imports.tweener.tweenList;
 const Signals = imports.signals;
 
 function init() {
+    overrideDumpStack();
     overrideGio();
     overrideGObject();
     overrideMainloop();
@@ -96,13 +97,32 @@ function overrideGio() {
     Gio.Settings.prototype.set_flags    = function(key, val) { return check_key_and_set(this, Gio._real_set_flags, key, val); }
 }
 
+function overrideDumpStack() {
+    global._dump_gjs_stack = global.dump_gjs_stack;
+    global.dump_gjs_stack = function(message = 'global.dump_gjs_stack():') {
+        global.logWarning(`${message}\n${new Error().stack}`);
+    }
+}
+
 function overrideGObject() {
+    const {each, toFastProperties} = imports.misc.util;
+
+    const originalInit = GObject.Object.prototype._init;
+    GObject.Object.prototype._init = function _init() {
+        originalInit.call(this, ...arguments);
+        each(this, function(value) {
+            if (value && !Array.isArray(value)) toFastProperties(value);
+        });
+    }
+
     GObject.Object.prototype.disconnect = function(id) {
-        if (GObject.signal_handler_is_connected (this, id))
+        if (this.is_finalized()) {
+            return true;
+        }
+        if (GObject.signal_handler_is_connected (this, id)) {
             return GObject.signal_handler_disconnect(this, id);
-        else {
-            log("Invalid or null signal handler id used when attempting to .disconnect from an object.");
-            global.dump_gjs_stack();
+        } else {
+            global.dump_gjs_stack('Invalid or null signal handler id used when attempting to .disconnect from an object.');
             return false;
         }
     };
@@ -114,8 +134,7 @@ function overrideMainloop() {
     Mainloop.source_remove = function (id) {
         let dump = GLib.MainContext.default().find_source_by_id(id) == null;
         if (dump) {
-            log("Invalid or null source id used when attempting to run Mainloop.source_remove()");
-            global.dump_gjs_stack();
+            global.dump_gjs_stack('Invalid or null source id used when attempting to run Mainloop.source_remove()');
         } else {
             Mainloop.__real_source_remove(id);
         }
@@ -187,6 +206,57 @@ function overrideJS() {
         }
     };
     Object.defineProperty(Object.prototype, "maybeGet", {enumerable: false});
+}
+
+function installPolyfills(readOnlyError) {
+    // Add a few ubiquitous JS namespaces to the global scope.
+
+    // util.js depends on a fully setup environment, so cannot be
+    // in the top-level scope here.
+    const {setTimeout, clearTimeout, setInterval, clearInterval} = imports.misc.util;
+
+    // These abstractions around Mainloop are safer and easier
+    // to use for people learning GObject introspection bindings.
+    Object.defineProperty(window, 'setTimeout', {
+        get: function() {
+            return setTimeout;
+        },
+        set: function() {
+            readOnlyError('setTimeout');
+        },
+        configurable: false,
+        enumerable: false
+    });
+    Object.defineProperty(window, 'clearTimeout', {
+        get: function() {
+            return clearTimeout;
+        },
+        set: function() {
+            readOnlyError('clearTimeout');
+        },
+        configurable: false,
+        enumerable: false
+    });
+    Object.defineProperty(window, 'setInterval', {
+        get: function() {
+            return setInterval;
+        },
+        set: function() {
+            readOnlyError('setInterval');
+        },
+        configurable: false,
+        enumerable: false
+    });
+    Object.defineProperty(window, 'clearInterval', {
+        get: function() {
+            return clearInterval;
+        },
+        set: function() {
+            readOnlyError('clearInterval');
+        },
+        configurable: false,
+        enumerable: false
+    });
 }
 
 function overrideTweener() {
@@ -475,7 +545,7 @@ function overrideSignals() {
     }
 
     function _signalHandlerIsConnected(id) {
-        if (! '_signalConnections' in this)
+        if (!( '_signalConnections' in this))
             return false;
 
         for (let connection of this._signalConnections) {

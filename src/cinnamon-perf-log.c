@@ -266,7 +266,7 @@ define_event (CinnamonPerfLog *perf_log,
 
   if (g_hash_table_lookup (perf_log->events_by_name, name) != NULL)
     {
-      g_warning ("Duplicate event event for '%s'\n", name);
+      g_warning ("Duplicate event for '%s'\n", name);
       return NULL;
     }
 
@@ -349,7 +349,7 @@ record_event (CinnamonPerfLog   *perf_log,
   total_bytes = sizeof (gint32) + sizeof (gint16) + bytes_len;
   if (G_UNLIKELY (bytes_len > BLOCK_SIZE || total_bytes > BLOCK_SIZE))
     {
-      g_warning ("Discarding oversize event '%s'\n", event->name);
+      g_warning ("Discarding oversized event '%s'\n", event->name);
       return;
     }
 
@@ -851,7 +851,7 @@ cinnamon_perf_log_dump_events (CinnamonPerfLog   *perf_log,
       g_string_append (output, " }");
 
       if (escaped_description != event->description)
-        g_free (escaped_description);
+        free (escaped_description);
     }
 
   g_string_append (output, " ]");
@@ -915,7 +915,7 @@ replay_to_json (gint64      time,
                                    g_value_get_string (arg));
 
       if (escaped != arg_str)
-        g_free (escaped);
+        free (escaped);
     }
   else
     {

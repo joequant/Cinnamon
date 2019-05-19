@@ -21,6 +21,7 @@
 #error "Only <st/st.h> can be included directly.h"
 #endif
 
+#include <stdlib.h>
 #include <glib-object.h>
 #include <clutter/clutter.h>
 #include <gtk/gtk.h>
@@ -44,8 +45,7 @@ typedef enum {
   ST_ICON_SYMBOLIC,
   ST_ICON_FULLCOLOR,
   ST_ICON_APPLICATION,
-  ST_ICON_DOCUMENT,
-  ST_ICON_FADED
+  ST_ICON_DOCUMENT
 } StIconType;
 
 typedef enum {

@@ -46,6 +46,9 @@ struct _StIconPrivate
 {
   ClutterActor *icon_texture;
   ClutterActor *pending_texture;
+
+  ClutterActorBox *allocation;
+
   guint         opacity_handler_id;
 
   GIcon        *gicon;
@@ -56,15 +59,20 @@ struct _StIconPrivate
   gint          icon_size;       /* icon size we are using */
   gint          icon_scale;
 
+  float         height, width;
+  gboolean      size_changed;
+
   CoglPipeline  *shadow_pipeline;
 
   StShadow     *shadow_spec;
+  ClutterSize   shadow_size;
 };
 
 G_DEFINE_TYPE_WITH_PRIVATE (StIcon, st_icon, ST_TYPE_WIDGET)
 
 static void st_icon_update               (StIcon *icon);
 static gboolean st_icon_update_icon_size (StIcon *icon);
+static void st_icon_clear_shadow_pipeline (StIcon *icon);
 
 #define DEFAULT_ICON_SIZE 48
 #define DEFAULT_ICON_TYPE ST_ICON_SYMBOLIC
@@ -167,33 +175,79 @@ st_icon_finalize (GObject *gobject)
 
   if (priv->icon_name)
     {
-      g_free (priv->icon_name);
+      free (priv->icon_name);
       priv->icon_name = NULL;
     }
 
   G_OBJECT_CLASS (st_icon_parent_class)->finalize (gobject);
 }
 
+/* Copied from st-widget.c */
+static void
+st_icon_allocate (ClutterActor          *actor,
+                    const ClutterActorBox *box,
+                    ClutterAllocationFlags flags)
+{
+  StIconPrivate *priv = ST_ICON (actor)->priv;
+  StThemeNode *theme_node = st_widget_get_theme_node (ST_WIDGET(actor));
+  ClutterActorBox content_box;
+  float width, height;
+
+  /* Note that we can't just chain up to clutter_actor_real_allocate --
+   * Clutter does some dirty tricks for backwards compatibility.
+   * Clutter also passes the actor's allocation directly to the layout
+   * manager, meaning that we can't modify it for children only.
+   */
+
+  clutter_actor_set_allocation (actor, box, flags);
+
+  st_theme_node_get_content_box (theme_node, box, &content_box);
+
+  clutter_actor_box_get_size (&content_box, &width, &height);
+
+  if (width != priv->width || height != priv->height)
+    {
+      priv->width = width;
+      priv->height = height;
+      priv->size_changed = TRUE;
+      priv->allocation = &content_box;
+    }
+
+  /* If we've chained up to here, we want to allocate the children using the
+   * currently installed layout manager */
+  clutter_layout_manager_allocate (clutter_actor_get_layout_manager (actor),
+                                    CLUTTER_CONTAINER (actor),
+                                    &content_box,
+                                    flags);
+}
+
 static void
 st_icon_paint (ClutterActor *actor)
 {
-  StIconPrivate *priv = ST_ICON (actor)->priv;
+  StIcon *icon = ST_ICON (actor);
+  StIconPrivate *priv = icon->priv;
 
   st_widget_paint_background (ST_WIDGET (actor));
 
   if (priv->icon_texture)
     {
+      if (priv->shadow_spec && (priv->shadow_pipeline == NULL || priv->size_changed))
+        {
+          priv->size_changed = FALSE;
+          st_icon_clear_shadow_pipeline (icon);
+
+          priv->shadow_pipeline =
+            _st_create_shadow_pipeline_from_actor (priv->shadow_spec,
+                                                  priv->icon_texture);
+
+          if (priv->shadow_pipeline)
+            clutter_size_init (&priv->shadow_size, priv->width, priv->height);
+        }
       if (priv->shadow_pipeline)
         {
-          ClutterActorBox allocation;
-          float width, height;
-
-          clutter_actor_get_allocation_box (priv->icon_texture, &allocation);
-          clutter_actor_box_get_size (&allocation, &width, &height);
-
           _st_paint_shadow_with_opacity (priv->shadow_spec,
                                          priv->shadow_pipeline,
-                                         &allocation,
+                                         priv->allocation,
                                          clutter_actor_get_paint_opacity (priv->icon_texture));
         }
 
@@ -208,7 +262,7 @@ st_icon_style_changed (StWidget *widget)
   StThemeNode *theme_node = st_widget_get_theme_node (widget);
   StIconPrivate *priv = self->priv;
 
-  g_clear_pointer (&priv->shadow_pipeline, cogl_object_unref);
+  st_icon_clear_shadow_pipeline (self);
   g_clear_pointer (&priv->shadow_spec, st_shadow_unref);
 
   priv->shadow_spec = st_theme_node_get_shadow (theme_node, "icon-shadow");
@@ -240,6 +294,7 @@ st_icon_class_init (StIconClass *klass)
   object_class->finalize = st_icon_finalize;
 
   actor_class->paint = st_icon_paint;
+  actor_class->allocate = st_icon_allocate;
 
   widget_class->style_changed = st_icon_style_changed;
 
@@ -276,38 +331,42 @@ static void
 st_icon_init (StIcon *self)
 {
   ClutterLayoutManager *layout_manager;
+  StIconPrivate *priv;
 
-  self->priv = st_icon_get_instance_private (self);
+  self->priv = priv = st_icon_get_instance_private (self);
 
   layout_manager = clutter_bin_layout_new (CLUTTER_BIN_ALIGNMENT_FILL,
                                            CLUTTER_BIN_ALIGNMENT_FILL);
 
   clutter_actor_set_layout_manager (CLUTTER_ACTOR (self), layout_manager);
-  self->priv->icon_size = DEFAULT_ICON_SIZE;
-  self->priv->prop_icon_size = -1;
-  self->priv->icon_type = DEFAULT_ICON_TYPE;
+  priv->icon_size = DEFAULT_ICON_SIZE;
+  priv->prop_icon_size = -1;
+  priv->icon_type = DEFAULT_ICON_TYPE;
 
-  self->priv->shadow_pipeline = NULL;
+  priv->shadow_pipeline = NULL;
 
-  self->priv->icon_scale = 1;
+  priv->icon_scale = 1;
+
+  priv->width = -1;
+  priv->height = -1;
+  priv->size_changed = TRUE;
 }
 
 static void
-st_icon_update_shadow_pipeline (StIcon *icon)
+st_icon_clear_shadow_pipeline (StIcon *icon)
 {
   StIconPrivate *priv = icon->priv;
 
   g_clear_pointer (&priv->shadow_pipeline, cogl_object_unref);
-
-  if (priv->shadow_spec)
-     priv->shadow_pipeline = _st_create_shadow_pipeline_from_actor (priv->shadow_spec, priv->icon_texture);
+  clutter_size_init (&priv->shadow_size, 0, 0);
 }
 
 static void
 on_pixbuf_changed (ClutterTexture *texture,
                    StIcon         *icon)
 {
-  st_icon_update_shadow_pipeline (icon);
+  st_icon_clear_shadow_pipeline (icon);
+  clutter_actor_queue_redraw (CLUTTER_ACTOR (icon));
 }
 
 static void
@@ -332,7 +391,7 @@ st_icon_finish_update (StIcon *icon)
       /* Remove the temporary ref we added */
       g_object_unref (priv->icon_texture);
 
-      st_icon_update_shadow_pipeline (icon);
+      st_icon_clear_shadow_pipeline (icon);
 
       /* "pixbuf-change" is actually a misnomer for "texture-changed" */
       g_signal_connect (priv->icon_texture, "pixbuf-change",
@@ -493,7 +552,7 @@ st_icon_set_icon_name (StIcon      *icon,
   if (g_strcmp0 (priv->icon_name, icon_name) == 0)
     return;
 
-  g_free (priv->icon_name);
+  free (priv->icon_name);
   priv->icon_name = g_strdup (icon_name);
 
   if (priv->gicon)
@@ -593,7 +652,7 @@ st_icon_set_gicon (StIcon *icon, GIcon *gicon)
 
   if (icon->priv->icon_name)
     {
-      g_free (icon->priv->icon_name);
+      free (icon->priv->icon_name);
       icon->priv->icon_name = NULL;
       g_object_notify (G_OBJECT (icon), "icon-name");
     }

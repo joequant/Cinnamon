@@ -152,7 +152,7 @@ cinnamon_util_get_file_display_name (GFile *file, gboolean use_fallback)
 
       basename = g_file_get_basename (file);
       ret = g_filename_display_name (basename);
-      g_free (basename);
+      free (basename);
     }
 
   return ret;
@@ -215,7 +215,7 @@ cinnamon_util_get_icon_for_uri_known_folders (const char *uri)
       == 0)
     icon = "user-desktop";
 
-  g_free (path);
+  free (path);
 
   return icon;
 }
@@ -299,8 +299,8 @@ cinnamon_util_get_label_for_uri (const char *text_uri)
        */
        label = g_strdup_printf (_("%1$s: %2$s"),
                                 root_display, displayname);
-       g_free (root_display);
-       g_free (displayname);
+       free (root_display);
+       free (displayname);
     }
 
   g_object_unref (root);
@@ -499,20 +499,6 @@ cinnamon_util_get_transformed_allocation (ClutterActor    *actor,
   box->y2 = y_max;
 }
 
-char *
-cinnamon_util_normalize_and_casefold (const char *str)
-{
-  char *normalized, *result;
-
-  if (str == NULL)
-    return NULL;
-
-  normalized = g_utf8_normalize (str, -1, G_NORMALIZE_ALL);
-  result = g_utf8_casefold (normalized, -1);
-  g_free (normalized);
-  return result;
-}
-
 /**
  * cinnamon_util_format_date:
  * @format: a strftime-style string format, as parsed by
@@ -610,8 +596,8 @@ cinnamon_util_get_week_start (void)
 
   if (week_start < 0 || week_start > 6)
     {
-      g_warning ("Whoever translated calendar:week_start:0 for GTK+ "
-                 "did so wrongly.\n");
+      g_warning ("calendar:week_start:0 for GTK+ "
+                 "was translated wrongly.\n");
       week_start = 0;
     }
 #endif
@@ -704,7 +690,7 @@ cinnamon_get_file_contents_utf8_sync (const char *path,
     return NULL;
   if (!g_utf8_validate (contents, len, NULL))
     {
-      g_free (contents);
+      free (contents);
       g_set_error (error,
                    G_IO_ERROR,
                    G_IO_ERROR_FAILED,
@@ -740,7 +726,7 @@ get_file_contents_utf8_thread (GTask        *task,
         return;
       }
 
-    g_task_return_pointer (task, contents, g_free);
+    g_task_return_pointer (task, contents, free);
 }
 
 static void
@@ -763,7 +749,7 @@ get_file_contents_utf8_task_finished (GObject      *source,
 
     (* data->callback) (contents, data->user_data);
 
-    g_clear_pointer (&contents, g_free);
+    g_clear_pointer (&contents, free);
     g_slice_free (CinnamonFileContentsCallbackData, data);
 }
 
@@ -804,7 +790,7 @@ cinnamon_get_file_contents_utf8         (const char                   *path,
                      get_file_contents_utf8_task_finished,
                      data);
 
-  g_task_set_task_data (task, async_path, (GDestroyNotify) g_free);
+  g_task_set_task_data (task, async_path, (GDestroyNotify) free);
   g_task_run_in_thread (task, get_file_contents_utf8_thread);
 
   g_object_unref (task);
@@ -919,26 +905,26 @@ cinnamon_parse_search_provider (const char    *data,
     return TRUE;
 
   if (*icon_data_uri)
-    g_free (*icon_data_uri);
+    free (*icon_data_uri);
   else
     g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
                  "search provider doesn't have icon");
 
   if (*name)
-    g_free (*name);
+    free (*name);
   else if (error && !*error)
     g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
                  "search provider doesn't have ShortName");
 
   if (*url)
-    g_free (*url);
+    free (*url);
   else if (error && !*error)
     g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
                  "search provider doesn't have template for url");
 
   if (*langs)
     {
-      g_list_foreach (*langs, (GFunc)g_free, NULL);
+      g_list_foreach (*langs, (GFunc)free, NULL);
       g_list_free (*langs);
     }
 

@@ -24,24 +24,17 @@
  *
  * #StPolygon is similar to #ClutterCairoTexture in that
  * it allows drawing via Cairo; the primary difference is that
- * it is dynamically sized.  To use, connect to the #StPolygon::repaint
- * signal, and inside the signal handler, call
- * st_polygon_get_context() to get the Cairo context to draw to.  The
- * #StPolygon::repaint signal will be emitted by default when the area is
- * resized or the CSS style changes; you can use the
+ * it is dynamically sized.
+ * The #StPolygon::repaint signal will be emitted by default when
+ * the area is resized or the CSS style changes; you can use the
  * st_polygon_queue_repaint() as well.
  */
 
 #include "st-polygon.h"
 
-#include <cairo.h>
-
 G_DEFINE_TYPE(StPolygon, st_polygon, CLUTTER_TYPE_ACTOR);
 
 struct _StPolygonPrivate {
-  CoglHandle texture;
-  CoglHandle material;
-  cairo_t *context;
   guint needs_repaint : 1;
   guint in_repaint : 1;
 
@@ -187,6 +180,8 @@ st_polygon_paint (ClutterActor *self)
     StPolygonPrivate *priv = area->priv;
     if (priv->debug) {
         gfloat coords[8];
+        CoglPath *selection_path;
+
         cogl_set_source_color4f (.50,
                                  .50,
                                  .50,
@@ -201,8 +196,10 @@ st_polygon_paint (ClutterActor *self)
         coords[6] = priv->urc_x;
         coords[7] = priv->urc_y;
 
-        cogl_path_polygon ((float *)coords, 4);
-        cogl_path_fill ();
+        selection_path = cogl_path_new();
+        cogl_path_polygon (selection_path, (float *)coords, 4);
+        cogl_path_fill (selection_path);
+        cogl_object_unref (selection_path);
     }
 }
 
@@ -211,9 +208,10 @@ static void
 st_polygon_pick (ClutterActor       *self,
                  const ClutterColor *pick_color)
 {
+    CoglPath *selection_path;
+    gfloat coords[8];
     StPolygon *area = ST_POLYGON (self);
     StPolygonPrivate *priv = area->priv;
-    gfloat coords[8];
 
     if (!clutter_actor_should_pick_paint (self))
         return;
@@ -232,8 +230,10 @@ st_polygon_pick (ClutterActor       *self,
                               pick_color->blue,
                               pick_color->alpha);
 
-    cogl_path_polygon ((float *)coords, 4);
-    cogl_path_fill ();
+    selection_path = cogl_path_new();
+    cogl_path_polygon (selection_path, (float *)coords, 4);
+    cogl_path_fill (selection_path);
+    cogl_object_unref (selection_path);
 }
 
 static void
@@ -361,7 +361,6 @@ st_polygon_init (StPolygon *area)
 {
   area->priv = G_TYPE_INSTANCE_GET_PRIVATE (area, ST_TYPE_POLYGON,
                                             StPolygonPrivate);
-  area->priv->texture = COGL_INVALID_HANDLE;
   area->priv->debug = FALSE;
 }
 

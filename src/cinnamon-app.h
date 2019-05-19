@@ -2,6 +2,7 @@
 #ifndef __CINNAMON_APP_H__
 #define __CINNAMON_APP_H__
 
+#include <stdlib.h>
 #include <clutter/clutter.h>
 #include <gio/gio.h>
 #include <meta/window.h>
@@ -43,7 +44,6 @@ ClutterActor *cinnamon_app_create_icon_texture (CinnamonApp *app,
 ClutterActor *cinnamon_app_create_icon_texture_for_window (CinnamonApp   *app,
                                                            int            size,
                                                            MetaWindow    *for_window);
-ClutterActor *cinnamon_app_get_faded_icon (CinnamonApp *app, int size);
 const char *cinnamon_app_get_name (CinnamonApp *app);
 const char *cinnamon_app_get_description (CinnamonApp *app);
 const char *cinnamon_app_get_keywords (CinnamonApp *app);
@@ -59,6 +59,8 @@ void cinnamon_app_activate_full (CinnamonApp      *app,
 
 void cinnamon_app_open_new_window (CinnamonApp *app,
                                 int       workspace);
+
+gboolean cinnamon_app_can_open_new_window (CinnamonApp *app);
 
 CinnamonAppState cinnamon_app_get_state (CinnamonApp *app);
 
@@ -78,10 +80,6 @@ gboolean cinnamon_app_launch (CinnamonApp     *app,
                            int           workspace,
                            char        **startup_id,
                            GError      **error);
-
-int cinnamon_app_compare_by_name (CinnamonApp *app, CinnamonApp *other);
-
-int cinnamon_app_compare (CinnamonApp *app, CinnamonApp *other);
 
 G_END_DECLS
 

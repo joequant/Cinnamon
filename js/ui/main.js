@@ -62,9 +62,6 @@
  * This is a container that contains all the desklets as childs. Its actor is
  * put between @global.bottom_window_group and @global.uiGroup.
  * @software_rendering (boolean): Whether software rendering is used
- * @lg_log_file (Gio.FileOutputStream): The stream used to log looking messages
- *                                      to ~/.cinnamon/glass.log
- * @can_log (boolean): Whether looking glass log to file can be used
  * @popup_rendering_actor (Clutter.Actor): The popup actor that is in the process of rendering
  * @xlet_startup_error (boolean): Whether there was at least one xlet that did
  * not manage to load
@@ -83,6 +80,7 @@ const Mainloop = imports.mainloop;
 const Meta = imports.gi.Meta;
 const Cinnamon = imports.gi.Cinnamon;
 const St = imports.gi.St;
+const GObject = imports.gi.GObject;
 const PointerTracker = imports.misc.pointerTracker;
 const Lang = imports.lang;
 
@@ -108,7 +106,6 @@ const NotificationDaemon = imports.ui.notificationDaemon;
 const WindowAttentionHandler = imports.ui.windowAttentionHandler;
 const Scripting = imports.ui.scripting;
 const CinnamonDBus = imports.ui.cinnamonDBus;
-const WindowManager = imports.ui.windowManager;
 const ThemeManager = imports.ui.themeManager;
 const Magnifier = imports.ui.magnifier;
 const XdndHandler = imports.ui.xdndHandler;
@@ -118,12 +115,12 @@ const Keybindings = imports.ui.keybindings;
 const Settings = imports.ui.settings;
 const Systray = imports.ui.systray;
 const Accessibility = imports.ui.accessibility;
+const {readOnlyError} = imports.ui.environment;
+const {installPolyfills} = imports.ui.overrides;
 
 var LAYOUT_TRADITIONAL = "traditional";
 var LAYOUT_FLIPPED = "flipped";
 var LAYOUT_CLASSIC = "classic";
-
-var CIN_LOG_FOLDER = GLib.get_home_dir() + '/.cinnamon/';
 
 var DEFAULT_BACKGROUND_COLOR = Clutter.Color.from_pixel(0x000000ff);
 
@@ -173,9 +170,6 @@ var deskletContainer = null;
 
 var software_rendering = false;
 
-var lg_log_file;
-var can_log = false;
-
 var popup_rendering_actor = null;
 
 var xlet_startup_error = false;
@@ -219,6 +213,11 @@ function _initRecorder() {
             recorder.set_framerate(recorderSettings.get_int('framerate'));
             recorder.set_filename('cinnamon-%d%u-%c.' + recorderSettings.get_string('file-extension'));
             let pipeline = recorderSettings.get_string('pipeline');
+
+            if (layoutManager.monitors.length > 1) {
+                let {x, y, width, height} = layoutManager.primaryMonitor;
+                recorder.set_area(x, y, width, height);
+            }
 
             if (!pipeline.match(/^\s*$/))
                 recorder.set_pipeline(pipeline);
@@ -294,27 +293,9 @@ function start() {
     global.logError = _logError;
     global.log = _logInfo;
 
-    let cinnamonStartTime = new Date().getTime();
+    installPolyfills(readOnlyError, _log);
 
-    if (global.settings.get_boolean("enable-looking-glass-logs")) {
-        try {
-            let log_filename = Gio.file_parse_name(CIN_LOG_FOLDER + '/glass.log');
-            let log_backup_filename = Gio.file_parse_name(CIN_LOG_FOLDER + '/glass.log.last');
-            let log_dir = Gio.file_new_for_path(CIN_LOG_FOLDER);
-            if (!log_filename.query_exists(null)) {
-                if (!log_dir.query_exists(null))
-                    log_dir.make_directory_with_parents(null);
-                lg_log_file = log_filename.append_to(0, null);
-            } else {
-                log_filename.copy(log_backup_filename, 1, null, null);
-                log_filename.delete(null);
-                lg_log_file = log_filename.append_to(0, null);
-            }
-            can_log = true;
-        } catch (e) {
-            global.logError("Error during looking-glass log initialization", e);
-        }
-    }
+    let cinnamonStartTime = new Date().getTime();
 
     log("About to start Cinnamon");
     if (GLib.getenv('CINNAMON_SOFTWARE_RENDERING')) {
@@ -364,6 +345,7 @@ function start() {
 
     slideshowManager = new SlideshowManager.SlideshowManager();
 
+    keybindingManager = new Keybindings.KeybindingManager();
     deskletContainer = new DeskletManager.DeskletContainer();
 
     // Set up stage hierarchy to group all UI actors under one container.
@@ -435,7 +417,7 @@ function start() {
 
     layoutManager._updateBoxes();
 
-    wm = new WindowManager.WindowManager();
+    wm = new imports.ui.windowManager.WindowManager();
     messageTray = new MessageTray.MessageTray();
     keyboard = new Keyboard.Keyboard();
     notificationDaemon = new NotificationDaemon.NotificationDaemon();
@@ -443,7 +425,6 @@ function start() {
 
     placesManager = new PlacesManager.PlacesManager();
 
-    keybindingManager = new Keybindings.KeybindingManager();
     magnifier = new Magnifier.Magnifier();
 
     Meta.later_add(Meta.LaterType.BEFORE_REDRAW, _checkWorkspaces);
@@ -483,7 +464,8 @@ function start() {
 
     global.screen.connect('window-entered-monitor', _windowEnteredMonitor);
     global.screen.connect('window-left-monitor', _windowLeftMonitor);
-    global.screen.connect('restacked', _windowsRestacked);
+
+    global.display.connect('gl-video-memory-purged', loadTheme);
 
     _nWorkspacesChanged();
 
@@ -786,13 +768,6 @@ function _windowEnteredMonitor(metaScreen, monitorIndex, metaWin) {
         _queueCheckWorkspaces();
 }
 
-function _windowsRestacked() {
-    // Figure out where the pointer is in case we lost track of
-    // it during a grab. (In particular, if a trayicon popup menu
-    // is dismissed, see if we need to close the message tray.)
-    global.sync_pointer();
-}
-
 function _queueCheckWorkspaces() {
     if (!dynamicWorkspaces)
         return false;
@@ -981,28 +956,23 @@ function formatLogArgument(arg = '', recursion = 0, depth = 6) {
         }
         return arg;
     }
-    let isGObject;
+    let isGObject = arg instanceof GObject.Object;
     let space = '';
     for (let i = 0; i < recursion + 1; i++) {
         space += '    ';
     }
-    // Need to work around CJS being unable to stringify some native objects
-    // https://github.com/linuxmint/cjs/blob/f7638496ea1bec4c6774e6065cb3b2c38b30a7bf/cjs/context.cpp#L138
-    try {
-        isGObject = arg.toString().indexOf('[0x') > -1;
-    } catch (e) {
-        arg = '<unreadable>';
-    }
     if (typeof arg === 'object') {
         let isArray = Array.isArray(arg);
         let brackets = isArray ? ['[', ']'] : ['{', '}'];
+        if (isGObject) {
+            arg = Util.getGObjectPropertyValues(arg);
+            if (Object.keys(arg).length === 0) {
+                return arg.toString();
+            }
+        }
         let array = isArray ? arg : Object.keys(arg);
         // Add beginning bracket with indentation
         let string = brackets[0] + (recursion + 1 > depth ? '' : '\n');
-        // GObjects are referenced in context and likely have circular references.
-        if (recursion === 0) {
-            depth = isGObject ? 2 : 6;
-        }
         for (let j = 0, len = array.length; j < len; j++) {
             if (isArray) {
                 string += space + formatLogArgument(arg[j], recursion + 1, depth) + ',\n';
@@ -1041,8 +1011,7 @@ function formatLogArgument(arg = '', recursion = 0, depth = 6) {
 function _log(category = 'info', msg = '') {
     // Convert arguments into an array so it can be iterated.
     let args = Array.prototype.slice.call(arguments);
-    // Remove category from the list of loggable arguments, renderLogLine will
-    // format it into the final string separately.
+    // Remove category from the list of loggable arguments
     args.shift();
     let text = '';
 
@@ -1060,10 +1029,14 @@ function _log(category = 'info', msg = '') {
         category: category,
         message: text
     };
+
     _errorLogStack.push(out);
-    if (lookingGlass)
+
+    if (lookingGlass) {
         lookingGlass.emitLogUpdate();
-    if (can_log) lg_log_file.write(renderLogLine(out), null);
+    }
+
+    log(`[LookingGlass/${category}] ${text}`);
 }
 
 /**
@@ -1203,30 +1176,6 @@ function _logInfo(msg) {
 }
 
 /**
- * formatTime:
- * @d (Date): date object to be formatted
- *
- * Formats a date object into a ISO-8601 format (YYYY-MM-DDTHH:MM:SSZ) in UTC+0
- *
- * Returns (string): a formatted string showing the date
- */
-function formatTime(d) {
-    return d.toISOString();
-}
-
-/**
- * renderLogLine:
- * @line (dictionary): a log line
- *
- * Converts a log line object into a string
- *
- * Returns (string): line in the format CATEGORY t=TIME MESSAGE
- */
-function renderLogLine(line) {
-    return line.category + ' t=' + formatTime(new Date(parseInt(line.timestamp))) + ' ' + line.message + '\n';
-}
-
-/**
  * logStackTrace:
  * @msg (string): message
  *
@@ -1306,9 +1255,10 @@ function _stageEventHandler(actor, event) {
 
     // This isn't a Meta.KeyBindingAction yet
     if (symbol == Clutter.Super_L || symbol == Clutter.Super_R) {
-        overview.hide();
-        expo.hide();
-        return true;
+        if (expo.visible) {
+            expo.hide();
+            return true;
+        }
     }
 
     if (action == Meta.KeyBindingAction.SWITCH_PANELS) {
@@ -1319,7 +1269,6 @@ function _stageEventHandler(actor, event) {
     switch (action) {
         // left/right would effectively act as synonyms for up/down if we enabled them;
         // but that could be considered confusing; we also disable them in the main view.
-        //
          case Meta.KeyBindingAction.WORKSPACE_LEFT:
              wm.actionMoveWorkspaceLeft();
              return true;
@@ -1336,10 +1285,6 @@ function _stageEventHandler(actor, event) {
             return true;
         case Meta.KeyBindingAction.PANEL_RUN_DIALOG:
             getRunDialog().open();
-            return true;
-        case Meta.KeyBindingAction.PANEL_MAIN_MENU:
-            overview.hide();
-            expo.hide();
             return true;
     }
 
@@ -1411,6 +1356,8 @@ function pushModal(actor, timestamp, options) {
     modalActorFocusStack.push(record);
 
     global.stage.set_key_focus(actor);
+
+    layoutManager.updateChrome(true);
     return true;
 }
 
@@ -1443,11 +1390,14 @@ function popModal(actor, timestamp) {
     modalCount -= 1;
 
     let record = modalActorFocusStack[focusIndex];
-    record.actor.disconnect(record.destroyId);
+    if (record.destroyId) record.actor.disconnect(record.destroyId);
+    record.destroyId = 0;
 
     if (focusIndex == modalActorFocusStack.length - 1) {
-        if (record.focus)
+        if (record.focusDestroyId) {
             record.focus.disconnect(record.focusDestroyId);
+            record.focusDestroyId = 0;
+        }
         global.stage.set_key_focus(record.focus);
     } else {
         let t = modalActorFocusStack[modalActorFocusStack.length - 1];
@@ -1466,6 +1416,9 @@ function popModal(actor, timestamp) {
 
     global.end_modal(timestamp);
     global.set_stage_input_mode(Cinnamon.StageInputMode.NORMAL);
+
+    layoutManager.updateChrome(true);
+
     Meta.enable_unredirect_for_screen(global.screen);
 }
 
@@ -1661,7 +1614,7 @@ function isInteresting(metaWindow) {
         return false;
 
     // Include any window the tracker finds interesting
-    if (tracker.is_window_interesting(metaWindow)) {
+    if (metaWindow.is_interesting()) {
         return true;
     }
 

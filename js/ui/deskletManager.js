@@ -5,6 +5,7 @@ const GLib = imports.gi.GLib;
 const St = imports.gi.St;
 const Meta = imports.gi.Meta;
 const Mainloop = imports.mainloop;
+const Lang = imports.lang;
 
 const Desklet = imports.ui.desklet;
 const DND = imports.ui.dnd;
@@ -31,9 +32,12 @@ var mouseTrackEnabled = false;
 var mouseTrackTimoutId = 0;
 var promises = [];
 
+var deskletChangeKey = 0;
 const ENABLED_DESKLETS_KEY = 'enabled-desklets';
 const DESKLET_SNAP_KEY = 'desklet-snap';
 const DESKLET_SNAP_INTERVAL_KEY = 'desklet-snap-interval';
+const KEYBINDING_SCHEMA = 'org.cinnamon.desktop.keybindings';
+const SHOW_DESKLETS_KEY = 'show-desklets';
 
 function initEnabledDesklets() {
     for (let i = 0; i < definitions.length; i++) {
@@ -68,12 +72,12 @@ function init(){
     definitions = getDefinitions();
 
     return initEnabledDesklets().then(function() {
-        global.settings.connect('changed::' + ENABLED_DESKLETS_KEY, _onEnabledDeskletsChanged);
+        deskletChangeKey = global.settings.connect('changed::' + ENABLED_DESKLETS_KEY, _onEnabledDeskletsChanged);
         global.settings.connect('changed::' + DESKLET_SNAP_KEY, _onDeskletSnapChanged);
         global.settings.connect('changed::' + DESKLET_SNAP_INTERVAL_KEY, _onDeskletSnapChanged);
 
         deskletsLoaded = true;
-        enableMouseTracking(true);
+        updateMouseTracking();
         global.log(`DeskletManager started in ${new Date().getTime() - startTime} ms`);
     });
 }
@@ -82,7 +86,8 @@ function getDeskletDefinition(definition) {
     return queryCollection(definitions, definition);
 }
 
-function enableMouseTracking(enable) {
+function updateMouseTracking() {
+    let enable = definitions.length > 0;
     if (enable && !mouseTrackTimoutId) {
         mouseTrackTimoutId = Mainloop.timeout_add(500, checkMouseTracking);
     } else if (!enable && mouseTrackTimoutId) {
@@ -188,9 +193,23 @@ function prepareExtensionUnload(extension, deleteConfig) {
     }
 }
 
+// Callback for extension.js
+function prepareExtensionReload(extension) {
+    for (var i = 0; i < definitions.length; i++) {
+        if (extension.uuid === definitions[i].uuid) {
+            let {desklet, desklet_id} = definitions[i];
+            if (!desklet) continue;
+            global.log(`Reloading desklet: ${extension.uuid}/${desklet_id}`);
+            desklet.on_desklet_reloaded();
+            return;
+        }
+    }
+}
+
 function _onEnabledDeskletsChanged() {
     let oldDefinitions = definitions.slice();
     definitions = getDefinitions();
+    let addedDesklets = [];
     let removedDesklets = [];
     let unChangedDesklets = [];
 
@@ -205,6 +224,8 @@ function _onEnabledDeskletsChanged() {
         }
 
         if (!oldDefinition || !isEqualToOldDefinition) {
+            let extension = Extension.getExtension(uuid);
+            addedDesklets.push({extension, definition: definitions[i]});
             continue;
         }
 
@@ -221,12 +242,18 @@ function _onEnabledDeskletsChanged() {
             removedDesklets[i].definition,
             Extension.get_max_instances(uuid, Extension.Type.DESKLET) !== 1 && !removedDesklets[i].changed
         );
-        Extension.unloadExtension(uuid, Extension.Type.DESKLET);
+    }
+    for (let i = 0; i < addedDesklets.length; i++) {
+        let {extension, definition} = addedDesklets[i];
+        if (!extension) {
+            continue;
+        }
+        _loadDesklet(extension, definition);
     }
 
     // Make sure all desklet extensions are loaded.
     // Once loaded, the desklets will add themselves via finishExtensionLoad
-    initEnabledDesklets();
+    initEnabledDesklets().then(updateMouseTracking);
 }
 
 function _unloadDesklet(deskletDefinition, deleteConfig) {
@@ -318,18 +345,26 @@ function _createDesklets(extension, deskletDefinition) {
 
 function createDeskletDefinition(definition) {
     let elements = definition.split(":");
-    if (elements.length == 4) {
-        return {
-            uuid: elements[0],
-            desklet_id: elements[1],
-            x: elements[2],
-            y: elements[3],
-            desklet: null
-        };
-    } else {
+    if (elements.length !== 4) {
         global.logError("Bad desklet definition: " + definition);
         return null;
     }
+    let deskletDefinition = {
+        uuid: elements[0],
+        desklet_id: elements[1],
+        x: elements[2],
+        y: elements[3]
+    };
+
+    let existingDefinition = getDeskletDefinition(deskletDefinition);
+
+    if (existingDefinition) {
+        return existingDefinition;
+    }
+
+    deskletDefinition.desklet = null;
+
+    return deskletDefinition;
 }
 
 function _deskletDefinitionsEqual(a, b) {
@@ -372,8 +407,9 @@ function _onDeskletSnapChanged(){
 
         enabledDesklets[i] = elements.join(":");
     }
-
+    global.settings.disconnect(deskletChangeKey);
     global.settings.set_strv(ENABLED_DESKLETS_KEY, enabledDesklets);
+    deskletChangeKey = global.settings.connect('changed::' + ENABLED_DESKLETS_KEY, _onEnabledDeskletsChanged);
     return;
 }
 
@@ -396,6 +432,26 @@ DeskletContainer.prototype = {
 
         this._dragPlaceholder = new St.Bin({style_class: 'desklet-drag-placeholder'});
         this._dragPlaceholder.hide();
+
+        this.isModal = false;
+        this.stageEventIds = [];
+
+        this.keyBindingSettings = new Gio.Settings({ schema_id: KEYBINDING_SCHEMA });
+        this.keyBindingSettings.connect('changed::show-desklets', () => this.applyKeyBindings());
+        this.applyKeyBindings();
+        global.settings.connect('changed::panel-edit-mode', () => {
+            if (this.isModal) {
+                this.lower();
+            }
+        });
+    },
+
+    applyKeyBindings: function() {
+        Main.keybindingManager.addHotKeyArray(
+            SHOW_DESKLETS_KEY,
+            this.keyBindingSettings.get_strv(SHOW_DESKLETS_KEY),
+            () => this.toggle()
+        );
     },
 
     /**
@@ -499,7 +555,10 @@ DeskletContainer.prototype = {
             }
         }
 
+        // We already moved this desklet, so skipping _onEnabledDeskletsChanged
+        global.settings.disconnect(deskletChangeKey);
         global.settings.set_strv(ENABLED_DESKLETS_KEY, enabledDesklets);
+        deskletChangeKey = global.settings.connect('changed::' + ENABLED_DESKLETS_KEY, _onEnabledDeskletsChanged);
 
         this._dragPlaceholder.hide();
         this.last_x = -1;
@@ -521,5 +580,68 @@ DeskletContainer.prototype = {
 
     hideDragPlaceholder: function() {
         this._dragPlaceholder.hide();
+    },
+
+    setModal: function() {
+        if (this.isModal) {
+            return;
+        }
+
+        this.stageEventIds = [
+            global.stage.connect('captured-event', Lang.bind(this, this.handleStageEvent)),
+            global.stage.connect('enter-event', Lang.bind(this, this.handleStageEvent)),
+            global.stage.connect('leave-event', Lang.bind(this, this.handleStageEvent))
+        ];
+
+        if (Main.pushModal(this.actor)) {
+            this.isModal = true;
+        }
+    },
+
+    unsetModal: function() {
+        if (!this.isModal) {
+            return;
+        }
+
+        for (let i = 0; i < this.stageEventIds.length; i++) {
+            global.stage.disconnect(this.stageEventIds[i]);
+        }
+        this.stageEventIds = [];
+
+        Main.popModal(this.actor);
+        this.isModal = false;
+    },
+
+    handleStageEvent: function(actor, event) {
+        let target = event.get_source();
+        let type = event.type();
+
+        if ((type === Clutter.EventType.BUTTON_PRESS || type === Clutter.EventType.BUTTON_RELEASE)
+            && target.toString().indexOf('ClutterStage') > -1) {
+            this.lower();
+        }
+
+        return false;
+    },
+
+    raise: function() {
+        if (this.actor.get_children().length === 0) {
+            return;
+        }
+        this.actor.get_parent().set_child_above_sibling(this.actor, null);
+        this.setModal();
+    },
+
+    lower: function() {
+        this.actor.get_parent().set_child_below_sibling(this.actor, global.window_group);
+        this.unsetModal();
+    },
+
+    toggle: function() {
+        if (this.isModal) {
+            this.lower();
+        } else {
+            this.raise();
+        }
     }
 };

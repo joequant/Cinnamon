@@ -186,7 +186,7 @@ _st_set_text_from_style (ClutterText *text,
   font = st_theme_node_get_font (theme_node);
   font_string = pango_font_description_to_string (font);
   clutter_text_set_font_name (text, font_string);
-  g_free (font_string);
+  free (font_string);
 
   decoration = st_theme_node_get_text_decoration (theme_node);
 
@@ -277,7 +277,7 @@ calculate_gaussian_kernel (float   sigma,
 
   half = n_values / 2;
 
-  ret = g_malloc (n_values * sizeof (gdouble));
+  ret = malloc (n_values * sizeof (gdouble));
   sum = 0.0;
 
   exp_divisor = 2 * sigma * sigma;
@@ -394,8 +394,8 @@ blur_pixels (guchar  *pixels_in,
                 }
             }
         }
-      g_free (kernel);
-      g_free (line);
+      free (kernel);
+      free (line);
     }
 
   return pixels_out;
@@ -428,7 +428,7 @@ _st_create_shadow_pipeline (StShadow     *shadow_spec,
   pixels_out = blur_pixels (pixels_in, width_in, height_in, rowstride_in,
                             shadow_spec->blur,
                             &width_out, &height_out, &rowstride_out);
-  g_free (pixels_in);
+  free (pixels_in);
 
   texture = st_cogl_texture_new_from_data_wrapper (width_out, height_out,
                                                    COGL_TEXTURE_NONE,
@@ -437,7 +437,7 @@ _st_create_shadow_pipeline (StShadow     *shadow_spec,
                                                    rowstride_out,
                                                    pixels_out);
 
-  g_free (pixels_out);
+  free (pixels_out);
 
   if (G_UNLIKELY (shadow_pipeline_template == NULL))
     {
@@ -472,7 +472,8 @@ _st_create_shadow_pipeline_from_actor (StShadow     *shadow_spec,
       CoglTexture *texture;
 
       texture = clutter_texture_get_cogl_texture (CLUTTER_TEXTURE (actor));
-      shadow_pipeline = _st_create_shadow_pipeline (shadow_spec, texture);
+      if (texture)
+        shadow_pipeline = _st_create_shadow_pipeline (shadow_spec, texture);
     }
   else
     {
@@ -624,7 +625,7 @@ _st_create_shadow_cairo_pattern (StShadow        *shadow_spec,
                                                      height_out,
                                                      rowstride_out);
   cairo_surface_set_user_data (surface_out, &shadow_pattern_user_data,
-                               pixels_out, (cairo_destroy_func_t) g_free);
+                               pixels_out, (cairo_destroy_func_t) free);
 
   dst_pattern = cairo_pattern_create_for_surface (surface_out);
   cairo_surface_destroy (surface_out);
@@ -692,17 +693,19 @@ _st_paint_shadow_with_opacity (StShadow        *shadow_spec,
   ClutterActorBox shadow_box;
   CoglColor color;
   CoglFramebuffer *fb = cogl_get_draw_framebuffer ();
+  guint8 adjusted;
 
   g_return_if_fail (shadow_spec != NULL);
   g_return_if_fail (shadow_pipeline != NULL);
 
   st_shadow_get_box (shadow_spec, box, &shadow_box);
 
+  adjusted = paint_opacity / 255;
   cogl_color_init_from_4ub (&color,
-                            shadow_spec->color.red   * paint_opacity / 255,
-                            shadow_spec->color.green * paint_opacity / 255,
-                            shadow_spec->color.blue  * paint_opacity / 255,
-                            shadow_spec->color.alpha * paint_opacity / 255);
+                            shadow_spec->color.red   * adjusted,
+                            shadow_spec->color.green * adjusted,
+                            shadow_spec->color.blue  * adjusted,
+                            shadow_spec->color.alpha * adjusted);
   cogl_pipeline_set_layer_combine_constant (shadow_pipeline, 0, &color);
   cogl_framebuffer_draw_rectangle (fb, shadow_pipeline,
                                    shadow_box.x1, shadow_box.y1,
